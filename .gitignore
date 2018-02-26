@@ -1,0 +1,14 @@
+*.csv
+/BeamformIt/
+/gcc-nmf/
+/outputs/
+/specs/
+/test_data/
+/test_data_2/
+*.txt
+*.wav
+/.ipynb_checkpoints/
+.idea/
+__pycache__/
+*.pyc
+/utils/.ipynb_checkpoints/
