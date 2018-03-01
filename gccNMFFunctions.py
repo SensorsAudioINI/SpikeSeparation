@@ -31,9 +31,12 @@ from numpy import hanning, array, squeeze, arange, concatenate, sqrt, sum, dot, 
 from scipy.signal import argrelmax
 from os.path import basename, join
 import logging
+import os
 
-from gccNMF.librosaSTFT import stft, istft
-from gccNMF.wavfile import wavread, wavwrite
+from sklearn.cluster import KMeans
+
+from librosaSTFT import stft, istft
+from wavfile import wavread, wavwrite
 
 SPEED_OF_SOUND_IN_METRES_PER_SECOND = 340.29
 

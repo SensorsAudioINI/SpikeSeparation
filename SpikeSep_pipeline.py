@@ -39,8 +39,8 @@ def main():
         results.write(
             'Conf0,Conf1,Type,EstPos1,EstPos2,GoodMics,SIR1,best1,SIR2,best2,CO1,CO2,SDR1,SDR2,SAR1,SAR2,SNR\n')
         # for I, pos in enumerate([[10, 1], [10, 6], [1, 8], [2, 9], [3, 9], [4, 7], [6, 5], [8, 3], [9, 7]]):
-        for pos in [[6, 5]]:
-            for sample in ['A', 'C']:
+        for pos in [[4, 7]]:
+            for sample in ['C']:
                 # for sample in ['B']:
 
                 try:
@@ -244,8 +244,8 @@ def main():
                         recons.append(np.einsum('ab,acb->ca', np.conj(w), x_spec_b))
 
                     # EMP LIMIT
-                    for vad, val_ch, x_sl, v_sl in zip([vad1, vad2], [ch1, ch2], [gt_vad1, gt_vad2], [gt_s1, gt_s2]):
-                        xx = x_spec[val_ch, x_sl]
+                    for val_ch, v_sl in zip([ch1, ch2],  [gt_s1, gt_s2]):
+                        xx = x_spec[val_ch, v_sl]
                         ll1 = estimate_fw_mapping(xx)
                         x_spec_b = x_spec[val_ch].T
                         w = step_bf(x_spec_b, ll1)
@@ -397,4 +397,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sir_b, sdr_b, sar_b = calculate_best('C', [6, 5], use_cached=False)
+    # main()
