@@ -74,9 +74,11 @@ class SAD(object):
         # whisper
         fs, whisper1 = wavfile.read(filename_whisper1)
         fs, whisper3 = wavfile.read(filename_whisper3)
-        TR = 10000 if sample in ['A', 'C'] and pos == [9, 7] else 18000
+        # TR = 10000 if sample in ['A', 'C'] and pos == [9, 7] else 18000
+        TR = 10000
 
-        trigger_index = np.where(whisper1 > TR)[0][0]
+        trigger_index = np.where(whisper1[:, 0] > TR)[0][0]
+        # trigger_index = np.where(whisper1 > TR)[0][0]
         whisper1 = whisper1[trigger_index + int(fs / 32):].astype('float32')
         whisper3 = whisper3[trigger_index + int(fs / 32):].astype('float32')
 
@@ -105,17 +107,35 @@ class SAD(object):
         m1_sum = np.sum(np.log(m1 + 1), axis=-1)
         m2_sum = np.sum(np.log(m2 + 1), axis=-1)
         SAD1 = np.array(0.8 * m1_sum > m2_sum)
+        SAD2 = np.array(0.8 * m2_sum > m1_sum)
+
         if len(SAD1) > len(sad1):
             R = int(np.floor(self.x_spec.shape[1] / len(sad1)))
             sad1 = np.repeat(sad1, R)
             sad2 = np.repeat(sad2, R)
         else:
-            R = int(np.ceil(len(sad1) / len(SAD1)))
+            R = int(np.floor(len(sad1) / len(SAD1)))
             sad1 = sad1[::R]
             sad2 = sad2[::R]
         min_len = min([len(sad1), len(SAD1)])
         sad1 = sad1[:min_len]
         sad2 = sad2[:min_len]
+        SAD1 = SAD1[:min_len]
+        SAD2 = SAD2[:min_len]
+
+        if np.corrcoef(sad1, SAD1)[0, 1] < 0:
+            _sad1 = sad1[:]
+            sad1 = sad2[:]
+            sad2 = _sad1[:]
+
+        # editdistance
+        pre1 = np.sum((sad1 * SAD1)[sad1 == 1]) / len(sad1[sad1 == 1])
+        pre2 = np.sum((sad2 * SAD2)[sad2 == 1]) / len(sad2[sad2 == 1])
+        pre = np.mean([pre1, pre2])
+
+        recall1 = np.sum((sad1 * SAD1)[SAD1 == 1]) / len(SAD1[SAD1 == 1])
+        recall2 = np.sum((sad2 * SAD2)[SAD2 == 1]) / len(SAD2[SAD2 == 1])
+        recall = np.mean([recall1, recall2])
 
         gt_vad1, gt_vad2, vad_slice = triggers(self.sample, self.fs, self.frame_step, self.jit)
         gt_s1, gt_s2, spec_slice = triggers(self.sample, self.fs, self.frame_step)
@@ -133,7 +153,23 @@ class SAD(object):
             recons.append(np.einsum('ab,acb->ca', np.conj(w), x_spec_b))
         recons = [istft(x.T, self.frame_step, window=np.hanning) for x in recons]
 
-        return recons
+        return recons, pre, recall
+
+    def best_mic(self, val_ch):
+        SIR = []
+        SDR = []
+        SAR = []
+
+        for ch in val_ch:
+            sdr_sad, sir_sad, sar_sad, _ = self.evaluate_bss([self.whisper[:, ch], self.whisper[:, ch]])
+            SIR.append(sir_sad)
+            SDR.append(sdr_sad)
+            SAR.append(sar_sad)
+
+        idx = np.argmax(np.array(SIR), axis=0)
+
+        return [self.whisper[:, idx[0]], self.whisper[:, idx[1]]]
+
 
     def emp_limit_LCMV(self, val_ch):
         _filename = 'cache/emp_lim_{}_{}_{}_{}_{}.pkl'.format(self.pos[0], self.pos[1], self.sample, self.frame_len,
@@ -152,12 +188,15 @@ class SAD(object):
 
             recons = [istft(x.T, self.frame_step, window=np.hanning) for x in recons]
             pickle.dump(recons, open(_filename, 'w'))
-            return recons
+            return recons, 0, 0
         else:
-            print "Using cached EMP..."
-            return pickle.load(open(_filename, 'r'))
+            print("Using cached EMP...")
+            return pickle.load(open(_filename, 'r')), 0, 0
 
-    def evaluate_bss(self, recons, save_name=None):
+    def evaluate_bss(self, recons_edit, save_name=None):
+        recons = recons_edit[0]
+        pre = recons_edit[1]
+        recall = recons_edit[2]
         init1 = 0
         init0 = int(30 * self.fs) if self.sample == 'A' else int(16 * self.fs)
         init2 = int(40 * self.fs) if self.sample == 'A' else int(26 * self.fs)
@@ -201,86 +240,130 @@ class SAD(object):
             wavfile.write('output_wavs/{}_{}_{}_2_gt.wav'.format(save_name, self.pos, self.sample), self.fs,
                           groundtruth88 / np.max(np.abs(groundtruth88)))
 
-        return mir_eval.separation.bss_eval_sources(np.array([groundtruth11, groundtruth88]),
-                                                    np.array([recons0, recons1]))
+        sdr_sad, sir_sad, sar_sad, _ =  mir_eval.separation.bss_eval_sources(np.array([groundtruth11, groundtruth88]),
+                                                np.array([recons0, recons1]))
 
-    def get_MNICASAD(self, cut_f=20, res_f=188, th=0.9):
+        return sdr_sad, sir_sad, sar_sad, pre, recall
 
-        env1 = butter_lowpass_filter(
-            np.abs(hilbert(self.gt1, N=int(2 ** np.ceil(np.log2(len(self.gt1)))))), cut_f, self.fs)
-        env2 = butter_lowpass_filter(
-            np.abs(hilbert(self.gt8, N=int(2 ** np.ceil(np.log2(len(self.gt8)))))), cut_f, self.fs)
+    def get_MNICASAD(self, cut_f=20, res_f=188, th=0.9, use_cache=True):
 
-        env1 = env1[:len(self.gt1)]
-        env2 = env2[:len(self.gt1)]
+        _filename = 'cache/mnicasad_{}_{}_{}_{}_{}_{}.pkl'.format(self.pos[0], self.pos[1], self.sample, cut_f,
+                                                                res_f, th)
 
-        env1 = resample(env1, res_f / self.fs)
-        env2 = resample(env2, res_f / self.fs)
-
-        # stfts & VADs
-        VAD1 = np.array(0.8 * env1 > env2)
-        VAD2 = np.array(0.8 * env2 > env1)
-
-        Y = np.array([resample(
-            butter_lowpass_filter(np.abs(hilbert(x, N=int(2 ** np.ceil(np.log2(len(x)))))), cut_f, self.fs), res_f / self.fs)
-            for x in self.whisper.T])
-
-        ori = np.array([env1, env2])
-        Y = Y[:, :ori.shape[1]]
-
-        pp = np.correlate(Y[0][:1000], ori[0][:1000], 'full')
-        j0 = np.argmax(pp) - 1000
-
-        if j0 > 0:
-            Y = Y[:, j0:]
-            ori = ori[:, :-j0]
+        if use_cache and os.path.isfile(_filename):
+            print("Using cached...MNICASAD")
+            return pickle.load(open(_filename, 'r'))
         else:
-            ori = ori[:, abs(j0):]
-            Y = Y[:, :-abs(j0)]
 
-        # m-nica and vad
-        est, o = m_nica(Y, ori, verbose=True, max_iter=500, th=0.9, patience=10)
+            env1 = butter_lowpass_filter(
+                np.abs(hilbert(self.gt1, N=int(2 ** np.ceil(np.log2(len(self.gt1)))))), cut_f, self.fs)
+            env2 = butter_lowpass_filter(
+                np.abs(hilbert(self.gt8, N=int(2 ** np.ceil(np.log2(len(self.gt8)))))), cut_f, self.fs)
 
-        sad1 = np.float32(est[0] * th > est[1])
-        sad2 = np.float32(est[1] * th > est[0])
+            env1 = env1[:len(self.gt1)]
+            env2 = env2[:len(self.gt1)]
 
-        return {'sad1': sad1, 'sad2': sad2, 'first': 0, 'second': 0, 'corr1': 0, 'corr2': 0}
+            env1 = resample(env1, res_f / self.fs)
+            env2 = resample(env2, res_f / self.fs)
 
-    def get_GCCSAD(self, frame_len=8192, frame_step=2048, th=0.95, lp=5):
+            # stfts & VADs
+            VAD1 = np.array(0.8 * env1 > env2)
+            VAD2 = np.array(0.8 * env2 > env1)
 
-        stereo_signal = np.array([butter_lowpass_filter(self.whisper[:, 0], 11000, self.fs),
-                                  butter_lowpass_filter(self.whisper[:, 1], 11000, self.fs)]).T
-        complexMixtureSpectrogram = computeComplexMixtureSpectrogram(stereo_signal.T, frame_len, frame_step,
-                                                                     np.hanning)
-        numChannels, numFrequencies, numTime = complexMixtureSpectrogram.shape
-        frequenciesInHz = getFrequenciesInHz(self.fs, numFrequencies)
+            Y = np.array([resample(
+                butter_lowpass_filter(np.abs(hilbert(x, N=int(2 ** np.ceil(np.log2(len(x)))))), cut_f, self.fs), res_f / self.fs)
+                for x in self.whisper.T])
 
-        spectralCoherenceV = complexMixtureSpectrogram[0] * complexMixtureSpectrogram[1].conj() \
-                             / abs(complexMixtureSpectrogram[0]) / abs(complexMixtureSpectrogram[1])
-        angularSpectrogram = getAngularSpectrogram(spectralCoherenceV, frequenciesInHz,
-                                                   0.5, 128)
-        angularSpectrogram = np.nan_to_num(angularSpectrogram)
-        meanAngularSpectrum = mean(angularSpectrogram, axis=-1)
-        targetTDOAIndexes = estimateTargetTDOAIndexesFromAngularSpectrum(meanAngularSpectrum, 0.5, 128, 3)
+            ori = np.array([env1, env2])
+            Y = Y[:, :ori.shape[1]]
 
-        B = low_pass(angularSpectrogram[targetTDOAIndexes[0], :], ll=lp)
-        A = low_pass(angularSpectrogram[targetTDOAIndexes[-1], :], ll=lp)
-        A -= np.min(A)
-        B -= np.min(B)
-        A /= np.max(A)
-        B /= np.max(B)
+            pp = np.correlate(Y[0][:1000], ori[0][:1000], 'full')
+            j0 = np.argmax(pp) - 1000
 
-        sad1 = np.float32(A * th > B)
-        sad2 = np.float32(B * th > A)
+            if j0 > 0:
+                Y = Y[:, j0:]
+                ori = ori[:, :-j0]
+            else:
+                ori = ori[:, abs(j0):]
+                Y = Y[:, :-abs(j0)]
 
-        return {'sad1': sad1, 'sad2': sad2, 'first': 0, 'second': 0, 'corr1': 0, 'corr2': 0}
+            # m-nica and vad
+            est, o = m_nica(Y, ori, verbose=True, max_iter=500, th=0.9, patience=10)
 
-    def get_SOSAD(self, frame_len=8192, frame_step=2048, th=0.9):
+            sad1 = np.float32(est[0] * th > est[1])
+            sad2 = np.float32(est[1] * th > est[0])
+
+            # np.corrcoef(env1)[0,1]
+
+            res = {'sad1': sad1, 'sad2': sad2,
+                   'corr1': 0, 'corr2': 0,
+                   'env1': env1, 'env2': env2,
+                   'first': est[0], 'second': est[1]}
+
+            pickle.dump(res, open(_filename, 'w'))
+            return res
+
+
+    def get_GCCSAD(self, frame_len=8192, frame_step=2048, th=0.95, lp=5, sides=[0, -1], use_cache=True):
+
+        _filename = 'cache/gccsad_{}_{}_{}_{}_{}_{}_{}.pkl'.format(self.pos[0], self.pos[1], self.sample, frame_len,
+                                                                frame_step, th, lp)
+
+        if use_cache and os.path.isfile(_filename):
+            print("Using cached...GCCSAD")
+            return pickle.load(open(_filename, 'r'))
+        else:
+
+            stereo_signal = np.array([butter_lowpass_filter(self.whisper[:, 0], 11000, self.fs),
+                                      butter_lowpass_filter(self.whisper[:, 1], 11000, self.fs)]).T
+            complexMixtureSpectrogram = computeComplexMixtureSpectrogram(stereo_signal.T, frame_len, frame_step,
+                                                                         np.hanning)
+            numChannels, numFrequencies, numTime = complexMixtureSpectrogram.shape
+            frequenciesInHz = getFrequenciesInHz(self.fs, numFrequencies)
+
+            spectralCoherenceV = complexMixtureSpectrogram[0] * complexMixtureSpectrogram[1].conj() \
+                                 / abs(complexMixtureSpectrogram[0]) / abs(complexMixtureSpectrogram[1])
+            angularSpectrogram = getAngularSpectrogram(spectralCoherenceV, frequenciesInHz,
+                                                       0.5, 128)
+            angularSpectrogram = np.nan_to_num(angularSpectrogram)
+            meanAngularSpectrum = mean(angularSpectrogram, axis=-1)
+            targetTDOAIndexes = estimateTargetTDOAIndexesFromAngularSpectrum(meanAngularSpectrum, 0.5, 128, 3)
+
+            B = low_pass(angularSpectrogram[targetTDOAIndexes[sides[0]], :], ll=lp)
+            A = low_pass(angularSpectrogram[targetTDOAIndexes[sides[1]], :], ll=lp)
+            A -= np.mean(A)
+            B -= np.mean(B)
+            A -= np.min(A)
+            B -= np.min(B)
+            A /= np.max(A)
+            B /= np.max(B)
+
+            sad1 = np.float32(A * th > B)
+            sad2 = np.float32(B * th > A)
+
+            mag1 = stft(self.gt1, frame_len, frame_step, window=np.hanning)
+            e1 = np.sum(np.abs(mag1), axis=0)
+            mag8 = stft(self.gt8, frame_len, frame_step, window=np.hanning)
+            e8 = np.sum(np.abs(mag8), axis=0)
+
+            res = {'sad1': sad1, 'sad2': sad2,
+                   'corr1': 0, 'corr2': 0,
+                   'env1': e1, 'env2': e8,
+                   'first': A, 'second': B}
+
+            pickle.dump(res, open(_filename, 'w'))
+            return res
+
+
+    def get_SOSAD(self, frame_len=8192, frame_step=2048, th=0.9, use_cache=True):
 
         _filename = 'cache/cached_{}_{}_{}_{}_{}_{}.pkl'.format(self.pos[0], self.pos[1], self.sample, frame_len,
                                                                 frame_step, th)
 
-        if not os.path.isfile(_filename):
+        if use_cache and os.path.isfile(_filename):
+            print ("Using cached...SOSAD")
+            return pickle.load(open(_filename, 'r'))
+        else:
 
             timestamps, ear_id, type_id, channel_id, itds = calculate_itds(self.timestamps, self.ear_id, self.type_id,
                                                                            self.channel_id,
@@ -292,9 +375,9 @@ class SAD(object):
             frame_step_s = frame_step / self.fs
 
             mag1 = stft(self.gt1, frame_len, frame_step, window=np.hanning)
-            e1 = np.sum(np.log(np.abs(mag1) + 1), axis=0)
+            e1 = np.sum(np.abs(mag1), axis=0)
             mag8 = stft(self.gt8, frame_len, frame_step, window=np.hanning)
-            e8 = np.sum(np.log(np.abs(mag8) + 1), axis=0)
+            e8 = np.sum(np.abs(mag8), axis=0)
             r_ch = range(10, 20)
 
             scores = []
@@ -337,15 +420,13 @@ class SAD(object):
 
             res = {'sad1': sad1, 'sad2': sad2,
                    'corr1': corr_env_1, 'corr2': corr_env_2,
-                   'env1': estimated_env_1, 'env2': estimated_env_2,
-                   'first': first, 'second': second}
+                   'env1': e1, 'env2': e8,
+                   'first': np.array(envs[int(first) - 1]), 'second': np.array(envs[second - 1])}
 
             pickle.dump(res, open(_filename, 'w'))
 
             return res
-        else:
-            print "Using cached...SOSAD"
-            return pickle.load(open(_filename, 'r'))
+
 
 
 def get_priors():

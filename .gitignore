@@ -14,3 +14,4 @@ __pycache__/
 /utils/.ipynb_checkpoints/
 /cache/
 /output_wavs/
+.~*
