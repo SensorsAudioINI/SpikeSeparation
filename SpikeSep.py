@@ -142,18 +142,20 @@ class SAD(object):
         x_spec = self.x_spec[:, :len(sad1), :]
 
         recons = []
-        for vad in [sad1, sad2]:
+        frames = [0, 0]
+        for kk, vad in enumerate([sad1, sad2]):
             vad = np.expand_dims(np.expand_dims(break_small(vad, self.break_w), 0), -1)
             xx = []
             for v_sl, x_sl in zip(vad_slice, spec_slice):
                 xx += [x_spec[val_ch, x_sl] * vad[:, v_sl]]
+                frames[kk] += np.sum(vad[:, v_sl])
             ll1 = estimate_fw_mapping(np.concatenate(xx, axis=1))
             x_spec_b = x_spec[val_ch].T
             w = step_bf(x_spec_b, ll1)
             recons.append(np.einsum('ab,acb->ca', np.conj(w), x_spec_b))
         recons = [istft(x.T, self.frame_step, window=np.hanning) for x in recons]
 
-        return recons, pre, recall
+        return recons, pre, recall, frames
 
     def best_mic(self, val_ch):
         SIR = []
@@ -191,12 +193,13 @@ class SAD(object):
             return recons, 0, 0
         else:
             print("Using cached EMP...")
-            return pickle.load(open(_filename, 'r')), 0, 0
+            return pickle.load(open(_filename, 'r')), 0, 0, 0
 
     def evaluate_bss(self, recons_edit, save_name=None):
         recons = recons_edit[0]
         pre = recons_edit[1]
         recall = recons_edit[2]
+        frames = recons_edit[3]
         init1 = 0
         init0 = int(30 * self.fs) if self.sample == 'A' else int(16 * self.fs)
         init2 = int(40 * self.fs) if self.sample == 'A' else int(26 * self.fs)
@@ -243,7 +246,7 @@ class SAD(object):
         sdr_sad, sir_sad, sar_sad, _ =  mir_eval.separation.bss_eval_sources(np.array([groundtruth11, groundtruth88]),
                                                 np.array([recons0, recons1]))
 
-        return sdr_sad, sir_sad, sar_sad, pre, recall
+        return sdr_sad, sir_sad, sar_sad, pre, recall, frames
 
     def get_MNICASAD(self, cut_f=20, res_f=188, th=0.9, use_cache=True):
 

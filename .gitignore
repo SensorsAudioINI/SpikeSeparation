@@ -6,7 +6,7 @@
 /test_data/
 /test_data_2/
 *.txt
-*.wav
+
 /.ipynb_checkpoints/
 .idea/
 __pycache__/
