@@ -19,3 +19,6 @@ __pycache__/
 /output_wavs/
 .~*
 *.m~
+/plots_and_tables_2.ipynb
+/__init__.py
+/GCC_spikes.ipynb
