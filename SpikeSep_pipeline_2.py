@@ -62,7 +62,8 @@ columns = ['Conf0', 'Conf1', 'Type', 'EstPos1', 'EstPos2', 'GoodMics', 'SIR1', '
 
 def main():
     df = pd.DataFrame(columns=columns)
-    for I, pos in enumerate([[10, 1], [10, 6], [1, 8], [2, 9], [3, 9], [4, 7], [6, 5], [8, 3], [9, 7]]):
+    # for I, pos in enumerate([[10, 1], [10, 6], [1, 8], [2, 9], [3, 9], [4, 7], [6, 5], [8, 3], [9, 7]]):
+    for I, pos in enumerate([[4, 7], [6, 5], [8, 3], [9, 7]]):
         for J, sample in enumerate(['A', 'C']):
             jit = good_delays[I * 2 + J]
             b = BREAK[I * 2 + J]
